@@ -1,7 +1,7 @@
 # Translations template for PROJECT.
 # Copyright (C) 2016 ORGANIZATION
 # This file is distributed under the same license as the PROJECT project.
-# 
+#
 # Translators:
 # Adam Tauber <asciimoo@gmail.com>, 2015
 # Alejandro León Aznar, 2014
@@ -184,14 +184,14 @@ msgstr ""
 #: searx/templates/oscar/preferences.html:3
 #: searx/templates/pix-art/index.html:8
 msgid "preferences"
-msgstr "preferencias"
+msgstr "Preferencias"
 
 #: searx/templates/courgette/index.html:11
 #: searx/templates/default/index.html:10 searx/templates/oscar/about.html:3
 #: searx/templates/oscar/navbar.html:8 searx/templates/oscar/navbar.html:34
 #: searx/templates/pix-art/index.html:7
 msgid "about"
-msgstr "acerca de"
+msgstr "Acerca de"
 
 #: searx/templates/courgette/preferences.html:5
 #: searx/templates/default/preferences.html:5

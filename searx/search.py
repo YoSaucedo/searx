@@ -20,6 +20,7 @@ import threading
 from thread import start_new_thread
 from time import time
 from uuid import uuid4
+import requests.exceptions
 import searx.poolrequests as requests_lib
 from searx.engines import (
     categories, engines
@@ -36,36 +37,125 @@ logger = logger.getChild('search')
 number_of_searches = 0
 
 
-def search_request_wrapper(fn, url, engine_name, **kwargs):
-    ret = None
+def send_http_request(engine, request_params, start_time, timeout_limit):
+    # for page_load_time stats
+    time_before_request = time()
+
+    # create dictionary which contain all
+    # informations about the request
+    request_args = dict(
+        headers=request_params['headers'],
+        cookies=request_params['cookies'],
+        timeout=timeout_limit,
+        verify=request_params['verify']
+    )
+
+    # specific type of request (GET or POST)
+    if request_params['method'] == 'GET':
+        req = requests_lib.get
+    else:
+        req = requests_lib.post
+        request_args['data'] = request_params['data']
+
+    # send the request
+    response = req(request_params['url'], **request_args)
+
+    # is there a timeout (no parsing in this case)
+    timeout_overhead = 0.2  # seconds
+    time_after_request = time()
+    search_duration = time_after_request - start_time
+    if search_duration > timeout_limit + timeout_overhead:
+        raise requests.exceptions.Timeout(response=response)
+
+    with threading.RLock():
+        # no error : reset the suspend variables
+        engine.continuous_errors = 0
+        engine.suspend_end_time = 0
+        # update stats with current page-load-time
+        # only the HTTP request
+        engine.stats['page_load_time'] += time_after_request - time_before_request
+        engine.stats['page_load_count'] += 1
+
+    # everything is ok : return the response
+    return response
+
+
+def search_one_request(engine, query, request_params, start_time, timeout_limit):
+    # update request parameters dependent on
+    # search-engine (contained in engines folder)
+    engine.request(query, request_params)
+
+    # ignoring empty urls
+    if request_params['url'] is None:
+        return []
+
+    if not request_params['url']:
+        return []
+
+    # send request
+    response = send_http_request(engine, request_params, start_time, timeout_limit)
+
+    # parse the response
+    response.search_params = request_params
+    return engine.response(response)
+
+
+def search_one_request_safe(engine_name, query, request_params, result_container, start_time, timeout_limit):
     engine = engines[engine_name]
+
     try:
-        ret = fn(url, **kwargs)
+        # send requests and parse the results
+        search_results = search_one_request(engine, query, request_params, start_time, timeout_limit)
+
+        # add results
+        result_container.extend(engine_name, search_results)
+
+        # update engine time when there is no exception
         with threading.RLock():
-            engine.continuous_errors = 0
-            engine.suspend_end_time = 0
-    except:
-        # increase errors stats
-        with threading.RLock():
-            engine.stats['errors'] += 1
-            engine.continuous_errors += 1
-            engine.suspend_end_time = time() + min(60, engine.continuous_errors)
+            engine.stats['engine_time'] += time() - start_time
+            engine.stats['engine_time_count'] += 1
 
-        # print engine name and specific error message
-        logger.exception('engine crash: {0}'.format(engine_name))
-    return ret
+        return True
+
+    except Exception as e:
+        engine.stats['errors'] += 1
+
+        search_duration = time() - start_time
+        requests_exception = False
+
+        if (issubclass(e.__class__, requests.exceptions.Timeout)):
+            # requests timeout (connect or read)
+            logger.error("engine {0} : HTTP requests timeout"
+                         "(search duration : {1} s, timeout: {2} s) : {3}"
+                         .format(engine_name, search_duration, timeout_limit, e.__class__.__name__))
+            requests_exception = True
+        elif (issubclass(e.__class__, requests.exceptions.RequestException)):
+            # other requests exception
+            logger.exception("engine {0} : requests exception"
+                             "(search duration : {1} s, timeout: {2} s) : {3}"
+                             .format(engine_name, search_duration, timeout_limit, e))
+            requests_exception = True
+        else:
+            # others errors
+            logger.exception('engine {0} : exception : {1}'.format(engine_name, e))
+
+        # update continuous_errors / suspend_end_time
+        if requests_exception:
+            with threading.RLock():
+                engine.continuous_errors += 1
+                engine.suspend_end_time = time() + min(60, engine.continuous_errors)
+
+        #
+        return False
 
 
-def threaded_requests(requests):
-    timeout_limit = max(r[2]['timeout'] for r in requests)
-    search_start = time()
+def search_multiple_requests(requests, result_container, start_time, timeout_limit):
     search_id = uuid4().__str__()
-    for fn, url, request_args, engine_name in requests:
-        request_args['timeout'] = timeout_limit
+
+    for engine_name, query, request_params in requests:
         th = threading.Thread(
-            target=search_request_wrapper,
-            args=(fn, url, engine_name),
-            kwargs=request_args,
+            target=search_one_request_safe,
+            args=(engine_name, query, request_params, result_container, start_time, timeout_limit),
             name=search_id,
         )
         th._engine_name = engine_name
@@ -73,7 +163,7 @@ def threaded_requests(requests):
 
     for th in threading.enumerate():
         if th.name == search_id:
-            remaining_time = max(0.0, timeout_limit - (time() - search_start))
+            remaining_time = max(0.0, timeout_limit - (time() - start_time))
             th.join(remaining_time)
             if th.isAlive():
                 logger.warning('engine timeout: {0}'.format(th._engine_name))
@@ -91,49 +181,10 @@ def default_request_params():
     }
 
 
-# create a callback wrapper for the search engine results
-def make_callback(engine_name, callback, params, result_container):
-
-    # creating a callback wrapper for the search engine results
-    def process_callback(response, **kwargs):
-        # check if redirect comparing to the True value,
-        # because resp can be a Mock object, and any attribut name returns something.
-        if response.is_redirect is True:
-            logger.debug('{0} redirect on: {1}'.format(engine_name, response))
-            return
-
-        response.search_params = params
-
-        search_duration = time() - params['started']
-        # update stats with current page-load-time
-        with threading.RLock():
-            engines[engine_name].stats['page_load_time'] += search_duration
-
-        timeout_overhead = 0.2  # seconds
-        timeout_limit = engines[engine_name].timeout + timeout_overhead
-
-        if search_duration > timeout_limit:
-            with threading.RLock():
-                engines[engine_name].stats['errors'] += 1
-            return
-
-        # callback
-        search_results = callback(response)
-
-        # add results
-        for result in search_results:
-            result['engine'] = engine_name
-
-        result_container.extend(engine_name, search_results)
-
-    return process_callback
-
-
 def get_search_query_from_webapp(preferences, form):
     query = None
     query_engines = []
     query_categories = []
-    query_paging = False
     query_pageno = 1
     query_lang = 'all'
     query_time_range = None
@@ -166,10 +217,14 @@ def get_search_query_from_webapp(preferences, form):
     # set query
     query = raw_text_query.getSearchQuery()
 
-    # get last selected language in query, if possible
+    # set specific language if set on request, query or preferences
     # TODO support search with multible languages
     if len(raw_text_query.languages):
         query_lang = raw_text_query.languages[-1]
+    elif 'language' in form:
+        query_lang = form.get('language')
+    else:
+        query_lang = preferences.get_value('language')
 
     query_time_range = form.get('time_range')
 
@@ -213,7 +268,7 @@ def get_search_query_from_webapp(preferences, form):
         if not load_default_categories:
             if not query_categories:
                 query_categories = list(set(engine['category']
-                                            for engine in engines))
+                                            for engine in query_engines))
         else:
             # if no category is specified for this search,
             # using user-defined default-configuration which
@@ -255,6 +310,10 @@ class Search(object):
     def search(self):
         global number_of_searches
 
+        # start time
+        start_time = time()
+
+        # answeres ?
         answerers_results = ask(self.search_query)
 
         if answerers_results:
@@ -273,6 +332,9 @@ class Search(object):
         user_agent = gen_useragent()
 
         search_query = self.search_query
+
+        # max of all selected engine timeout
+        timeout_limit = 0
 
         # start search-reqest for all selected engines
         for selected_engine in search_query.engines:
@@ -303,7 +365,6 @@ class Search(object):
             request_params = default_request_params()
             request_params['headers']['User-Agent'] = user_agent
             request_params['category'] = selected_engine['category']
-            request_params['started'] = time()
             request_params['pageno'] = search_query.pageno
 
             if hasattr(engine, 'language') and engine.language:
@@ -315,52 +376,16 @@ class Search(object):
             request_params['safesearch'] = search_query.safesearch
             request_params['time_range'] = search_query.time_range
 
-            # update request parameters dependent on
-            # search-engine (contained in engines folder)
-            engine.request(search_query.query.encode('utf-8'), request_params)
-
-            if request_params['url'] is None:
-                # TODO add support of offline engines
-                pass
-
-            # create a callback wrapper for the search engine results
-            callback = make_callback(
-                selected_engine['name'],
-                engine.response,
-                request_params,
-                self.result_container)
-
-            # create dictionary which contain all
-            # informations about the request
-            request_args = dict(
-                headers=request_params['headers'],
-                hooks=dict(response=callback),
-                cookies=request_params['cookies'],
-                timeout=engine.timeout,
-                verify=request_params['verify']
-            )
-
-            # specific type of request (GET or POST)
-            if request_params['method'] == 'GET':
-                req = requests_lib.get
-            else:
-                req = requests_lib.post
-                request_args['data'] = request_params['data']
-
-            # ignoring empty urls
-            if not request_params['url']:
-                continue
-
             # append request to list
-            requests.append((req, request_params['url'],
-                             request_args,
-                             selected_engine['name']))
+            requests.append((selected_engine['name'], search_query.query.encode('utf-8'), request_params))
 
-        if not requests:
-            return self.result_container
-        # send all search-request
-        threaded_requests(requests)
-        start_new_thread(gc.collect, tuple())
+            # update timeout_limit
+            timeout_limit = max(timeout_limit, engine.timeout)
+
+        if requests:
+            # send all search-request
+            search_multiple_requests(requests, self.result_container, start_time, timeout_limit)
+            start_new_thread(gc.collect, tuple())
 
         # return results, suggestions, answers and infoboxes
         return self.result_container

@@ -13,6 +13,7 @@ server:
     secret_key : "ultrasecretkey" # change this!
     base_url : False # Set custom base_url. Possible values: False or "https://your.custom.host/location/"
     image_proxy : False # Proxying image results through searx
+    http_protocol_version : "1.0"  # 1.0 and 1.1 are supported
 
 ui:
     themes_path : "" # Custom ui themes path - leave it blank if you didn't change
@@ -91,6 +92,17 @@ engines:
     disabled : True
     shortcut : bb
 
+  - name : ccc-tv
+    engine : xpath
+    paging : False
+    search_url : https://media.ccc.de/search/?q={query}
+    url_xpath : //div[@class="caption"]/h3/a/@href
+    title_xpath : //div[@class="caption"]/h3/a/text()
+    content_xpath : //div[@class="caption"]/h4/@title
+    categories : videos
+    disabled : True
+    shortcut : c3tv
+
   - name : crossref
     engine : json_engine
     paging : True
@@ -154,6 +166,18 @@ engines:
     shortcut : ddg
     disabled : True
 
+  - name : etymonline
+    engine : xpath
+    paging : True
+    search_url : http://etymonline.com/?search={query}&p={pageno}
+    url_xpath : //dt/a[1]/@href
+    title_xpath : //dt
+    content_xpath : //dd
+    suggestion_xpath : //a[@class="crossreference"]
+    first_page_num : 0
+    shortcut : et
+    disabled : True
+
 # api-key required: http://www.faroo.com/hp/api/api.html#key
 #  - name : faroo
 #    engine : faroo
@@ -192,6 +216,7 @@ engines:
   - name : gigablast
     engine : gigablast
     shortcut : gb
+    timeout : 3.0
     disabled: True
 
   - name : gitlab
@@ -250,8 +275,8 @@ engines:
     engine        : xpath
     search_url    : https://play.google.com/store/search?q={query}&c=movies
     url_xpath     : //a[@class="title"]/@href
-    title_xpath   : //a[@class="title"]
-    content_xpath : //a[@class="subtitle"]
+    title_xpath   : //a[@class="title"]/@title
+    content_xpath : //a[contains(@class, "subtitle")]
     categories : videos
     shortcut : gpm
     disabled : True
@@ -282,8 +307,8 @@ engines:
     engine : xpath
     paging : True
     search_url : https://habrahabr.ru/search/page{pageno}/?q={query}
-    url_xpath : //div[@class="search_results"]//a[@class="post_title"]/@href
-    title_xpath : //div[@class="search_results"]//a[@class="post_title"]
+    url_xpath : //div[@class="search_results"]//a[contains(@class, "post__title_link")]/@href
+    title_xpath : //div[@class="search_results"]//a[contains(@class, "post__title_link")]
     content_xpath : //div[@class="search_results"]//div[contains(@class, "content")]
     categories : it
     timeout : 4.0
@@ -429,6 +454,14 @@ engines:
     shortcut : scc
     disabled : True
 
+#  - name : searx
+#    engine : searx_engine
+#    shortcut : se
+#    instance_urls :
+#        - http://127.0.0.1:8888/
+#        - ...
+#    disabled : True
+
   - name : spotify
     engine : spotify
     shortcut : stf
@@ -544,6 +577,18 @@ engines:
     # See : http://mymemory.translated.net/doc/usagelimits.php
     # api_key : ''
 
+  - name : voat
+    engine: xpath
+    shortcut: vo
+    categories: social media
+    search_url : https://voat.co/search?q={query}
+    url_xpath : //p[contains(@class, "title")]/a/@href
+    title_xpath : //p[contains(@class, "title")]/a
+    content_xpath : //span[@class="domain"]
+    timeout : 10.0
+    disabled : True
+
+
 #The blekko technology and team have joined IBM Watson! -> https://blekko.com/
 #  - name : blekko images
 #    engine : blekko_images
@@ -567,6 +612,7 @@ engines:
 locales:
     en : English
     bg : Български (Bulgarian)
+    cs : Čeština (Czech)
     de : Deutsch (German)
     el_GR : Ελληνικά (Greek_Greece)
     eo : Esperanto (Esperanto)
@@ -581,5 +627,6 @@ locales:
     pt_BR : Português (Portuguese_Brazil)
     ro : Română (Romanian)
     ru : Русский (Russian)
+    sv : Svenska (Swedish)
     tr : Türkçe (Turkish)
     zh : 中文 (Chinese)

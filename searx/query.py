@@ -24,6 +24,8 @@ from searx.engines import (
 import string
 import re
 
+VALID_LANGUAGE_CODE = re.compile(r'^[a-z]{2,3}(\-[A-Z]{2})?$')
+
 
 class RawTextQuery(object):
     """parse raw text query (the value from the html input)"""
@@ -68,24 +70,32 @@ class RawTextQuery(object):
             if query_part[0] == ':':
                 lang = query_part[1:].lower()
 
+                # user may set a valid, yet not selectable language
+                if VALID_LANGUAGE_CODE.match(lang):
+                    self.languages.append(lang)
+                    parse_next = True
+
                 # check if any language-code is equal with
                 # declared language-codes
                 for lc in language_codes:
-                    lang_id, lang_name, country = map(str.lower, lc)
+                    lang_id, lang_name, country, english_name = map(unicode.lower, lc)
 
                     # if correct language-code is found
                     # set it as new search-language
                     if lang == lang_id\
                        or lang_id.startswith(lang)\
                        or lang == lang_name\
+                       or lang == english_name\
                        or lang.replace('_', ' ') == country:
                         parse_next = True
-                        self.languages.append(lang)
-                        break
+                        self.languages.append(lang_id)
+                        # to ensure best match (first match is not necessarily the best one)
+                        if lang == lang_id:
+                            break
 
             # this force a engine or category
             if query_part[0] == '!' or query_part[0] == '?':
-                prefix = query_part[1:].replace('_', ' ')
+                prefix = query_part[1:].replace('-', ' ')
 
                 # check if prefix is equal with engine shortcut
                 if prefix in engine_shortcuts:

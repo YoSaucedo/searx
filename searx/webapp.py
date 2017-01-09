@@ -40,7 +40,7 @@ except:
     logger.critical("cannot import dependency: pygments")
     from sys import exit
     exit(1)
-
+from cgi import escape
 from datetime import datetime, timedelta
 from urllib import urlencode
 from urlparse import urlparse, urljoin
@@ -53,7 +53,7 @@ from flask_babel import Babel, gettext, format_date, format_decimal
 from flask.json import jsonify
 from searx import settings, searx_dir, searx_debug
 from searx.engines import (
-    categories, engines, get_engines_stats, engine_shortcuts
+    categories, engines, engine_shortcuts, get_engines_stats, initialize_engines
 )
 from searx.utils import (
     UnicodeWriter, highlight_content, html_to_text, get_themes,
@@ -81,7 +81,7 @@ except ImportError:
 
 # serve pages with HTTP/1.1
 from werkzeug.serving import WSGIRequestHandler
-WSGIRequestHandler.protocol_version = "HTTP/1.1"
+WSGIRequestHandler.protocol_version = "HTTP/{}".format(settings['server'].get('http_protocol_version', '1.0'))
 
 static_path, templates_path, themes =\
     get_themes(settings['ui']['themes_path']
@@ -103,6 +103,9 @@ app = Flask(
 app.jinja_env.trim_blocks = True
 app.jinja_env.lstrip_blocks = True
 app.secret_key = settings['server']['secret_key']
+
+if not searx_debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+    initialize_engines(settings['engines'])
 
 babel = Babel(app)
 
@@ -330,6 +333,10 @@ def render(template_name, override_theme=None, **kwargs):
 
     kwargs['safesearch'] = str(request.preferences.get_value('safesearch'))
 
+    kwargs['language_codes'] = language_codes
+    if 'current_language' not in kwargs:
+        kwargs['current_language'] = request.preferences.get_value('language')
+
     # override url_for function in templates
     kwargs['url_for'] = url_for_theme
 
@@ -433,8 +440,10 @@ def index():
     for result in results:
         if output_format == 'html':
             if 'content' in result and result['content']:
-                result['content'] = highlight_content(result['content'][:1024], search_query.query.encode('utf-8'))
-            result['title'] = highlight_content(result['title'], search_query.query.encode('utf-8'))
+                result['content'] = highlight_content(escape(result['content'][:1024]),
+                                                      search_query.query.encode('utf-8'))
+            result['title'] = highlight_content(escape(result['title'] or u''),
+                                                search_query.query.encode('utf-8'))
         else:
             if result.get('content'):
                 result['content'] = html_to_text(result['content']).strip()
@@ -468,7 +477,10 @@ def index():
     if output_format == 'json':
         return Response(json.dumps({'query': search_query.query,
                                     'number_of_results': number_of_results,
-                                    'results': results}),
+                                    'results': results,
+                                    'answers': list(result_container.answers),
+                                    'infoboxes': result_container.infoboxes,
+                                    'suggestions': list(result_container.suggestions)}),
                         mimetype='application/json')
     elif output_format == 'csv':
         csv = UnicodeWriter(cStringIO.StringIO())
@@ -505,6 +517,7 @@ def index():
         answers=result_container.answers,
         infoboxes=result_container.infoboxes,
         paging=result_container.paging,
+        current_language=search_query.lang,
         base_url=get_base_url(),
         theme=get_current_theme_name(),
         favicons=global_favicons[themes.index(get_current_theme_name())]
@@ -547,7 +560,7 @@ def autocompleter():
         if not language or language == 'all':
             language = 'en'
         else:
-            language = language.split('_')[0]
+            language = language.split('-')[0]
         # run autocompletion
         raw_results.extend(completer(raw_text_query.getSearchQuery(), language))
 
@@ -599,6 +612,8 @@ def preferences():
             if e.timeout > settings['outgoing']['request_timeout']:
                 stats[e.name]['warn_timeout'] = True
 
+    # get first element [0], the engine time,
+    # and then the second element [1] : the time (the first one is the label)
     for engine_stat in get_engines_stats()[0][1]:
         stats[engine_stat.get('name')]['time'] = round(engine_stat.get('avg'), 3)
         if engine_stat.get('avg') > settings['outgoing']['request_timeout']:
@@ -608,9 +623,7 @@ def preferences():
     return render('preferences.html',
                   locales=settings['locales'],
                   current_locale=get_locale(),
-                  current_language=lang,
                   image_proxy=image_proxy,
-                  language_codes=language_codes,
                   engines_by_category=categories,
                   stats=stats,
                   answerers=[{'info': a.self_info(), 'keywords': a.keywords} for a in answerers],
@@ -620,7 +633,8 @@ def preferences():
                   themes=themes,
                   plugins=plugins,
                   allowed_plugins=allowed_plugins,
-                  theme=get_current_theme_name())
+                  theme=get_current_theme_name(),
+                  preferences=True)
 
 
 @app.route('/image_proxy', methods=['GET'])
